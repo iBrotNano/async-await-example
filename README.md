@@ -1,4 +1,4 @@
-# Async Await
+# I think async await
 
 ## Was heißt asynchron?
 
@@ -28,7 +28,9 @@ Die Implementierung in .NET ist eine Implementierung des **Promise Model of Conc
 
 `async` ist ein Schlüsselwort mit der man eine Methode kennzeichnen muss, die asynchronen Code ausführen darf. Mehr macht dieses Schlüsselwort nicht. Sobald man `async` in einer Methodensignatur verwendet, weiß der Compiler, dass man innerhalb der Methode mit `await` auf das Ergebnis einer Operation warten kann.
 
-Klarer wird es wenn man sich das Verhalten tatsächlich einmal anschaut. Ich habe dazu eine Beispielprogramm geschrieben, mit dem man am Beispiel einer Retry-Methode das Verhalten beobachten kann.
+Klarer wird es wenn man sich das Verhalten tatsächlich einmal anschaut. Ich habe dazu eine Beispielprogramm geschrieben, mit dem man in einer Retry-Methode das Verhalten beobachten kann.
+
+Das Beispiel ist unter https://github.com/iBrotNano/async-await-example zu finden.
 
 In der Beispielanwendung gibt es mehrere Buttons, die die einzelnen Fälle starten.
 
@@ -67,6 +69,8 @@ _ = Retry.RetryActionAsync(() => WriteToTextbox($"Executed and nothing is return
     , _progress);
 ```
 
+`_ = Code` heißt, sende das Ergebnis der Methode ins Nirvana.
+
 Im nächsten Beispiel geht es ans Eingemachte. Es wird mit `await` auf das Ende der asynchronen Methode gewartet. Die aufrufende Methode wird erst weiter ausgeführt, wenn die Arbeit der asynchronen Methode getan ist.
 
 Die UI bleibt aber trotzdem bedienbar. Warum ist das so? Die Methode ist asynchron. Das heißt sie blockiert nicht den aktuellen Thread. In diesem Fall den UI-Thread.
@@ -91,6 +95,8 @@ try
 catch { }
 ```
 
+Es gibt Methoden mit denen das Verhalten von `await` gesteuert werden kann. Die wichtigste ist `Task.ConfigureAwait(bool)`. Mit ihr kann man festlegen ob der Code nach dem `await` im Context der aufrufenden Methode weiter laufen soll. Das bedeutet, wenn ich z.B. ein in der Methode einen Rückgabewert der asynchronen Methode in der UI anzeige, dann muss die Methode im selben Synchronisationscontext weiter laufen. Ist es z.B. egal auf welchem `Thread` der weitere Code ausgeführt wird, dann kann ich die Kontrolle über den Context abgeben.
+
 ## Task synchron ausführen
 
 In manchen Fällen kann es vorkommen, dass eine API nur eine asynchrone Methode bereit stellt. Man kann diese dann synchron ausführen. Fall 4 zeigt wie dies geht:
@@ -113,11 +119,11 @@ Mit `.GetAwaiter().GetResult()` kann das Ergebnis abgewartet werden. `async` ist
 
 Grob gibt es zwei Fälle in denen asynchrone Programmierung Sinn macht. Wenn eine Methode lange läuft, weil I/O-Daten verarbeitet werden oder wenn eine komplexe Berechnung von der CPU ausgeführt wird.
 
-Microsoft beschreibt die sehr ausführlich unter https://docs.microsoft.com/en-us/dotnet/standard/async-in-depth. Ich mag hier nicht nochmal alles vorkauen. Deshalb ist hier nur eine kurze Zusammenfassung.
+Microsoft beschreibt dies sehr ausführlich unter https://docs.microsoft.com/en-us/dotnet/standard/async-in-depth. Ich mag hier nicht nochmal alles vorkauen. Deshalb ist hier nur eine kurze Zusammenfassung.
 
 ### I/O
 
-Im I/O-Fall arbeitet die CPU nur Kurz in der Zeit in der alles vorbereitet wird um die Operation durchzuführen. Danach wird die Kontrolle an das OS abgegeben. Die Anwendung führt dann nichts mehr aus, sondern wartet nur noch auf das Ergebnis vom OS. Einen `Thread` zu blockieren und nichts auszuführen macht keinen Sinn.
+Im I/O-Fall arbeitet die CPU nur Kurz in der Zeit in der alles vorbereitet wird um die Operation durchzuführen. Danach wird die Kontrolle an das OS abgegeben. Dieses schreibt leitet dann zum Beispiel die Schreiboperation an die Hardware weiter oder führt Netzwerkkommunikation aus. Die Anwendung führt dann nichts mehr aus, sondern wartet nur noch auf das Ergebnis vom OS. Einen `Thread` zu blockieren und nichts auszuführen macht keinen Sinn.
 
 ### CPU-intensive Aufgaben
 
@@ -134,3 +140,60 @@ Wenn es sich um I/O-Methoden handelt sollte man nur eine asynchrone Implementier
 Wenn es reine Berechnungen sind sollte man nur eine synchrone Implementierung schreiben. Benutzer der Methode können dann selbst entscheiden ob sie mit `Task.Run()` diesen Code parallel abarbeiten lassen.
 
 Viele Methoden enthalten beide Arten von Logik. Sie sollten wie I/O-Methoden asynchron implementiert werden.
+
+## Asynchrone Methoden richtig benutzen
+
+Asynchrone Programmierung ist nicht einfach nur eine Technik, damit eine UI ansprechbar bleibt. Es handelt sich hier um ein Paradigma. Eine synchrone Methode könnte so implementiert sein:
+
+```c#
+private int DoSomething()
+{
+    int result1 = GetSomething();
+    ComputeSomething(result1);
+    var result2 = GetSomethingOther();
+    DoOtherUsefullStuff();
+    return Combine(result1, result2);
+}
+```
+
+Diese Methode würde ja synchron ausgeführt.
+
+Asynchron könnte solch eine Methode so aussehen:
+
+```c#
+private async Task<int> DoSomethingAsync()
+{
+    int result1 = await GetSomethingAsync();
+    ComputeSomething(result1);
+    var result2 = await GetSomethingOtherAsync();
+    DoOtherUsefullStuff();
+    return CombineAsync(result1, result2);
+}
+```
+
+Eins zu eins umgeschrieben läuft die Methode aber nicht optimal. Es ist wichtig sich bewusst zu machen, wann welches Resultat wie benötigt wird.
+
+`GetSomethingAsync()` und `ComputeSomething(result1)` hängen voneinander ab und sollten in einer asynchronen Methode kombiniert werden. Die Ergebnisse von `GetSomethingAsync()` und `GetSomethingOtherAsync()` werden erst nach `DoOtherUsefullStuff()` benötigt. Vorher auf das Ende der `Task`s zu warten macht hier auch keinen Sinn weil `DoOtherUsefullStuff()` nicht von den Ergebnissen abhängt.
+
+Hier ist eine optimierte Version des Codes:
+
+```c#
+private async Task<int> DoSomethingAsync()
+{
+    var result1Task = GetResult1Async();
+    var result2Task = GetSomethingOtherAsync();
+    DoOhterUsefullStuff();
+    var result1 = await result1Task;
+    var result2 = await result2Task;
+    return CombineAsync(result1, result2);
+}
+
+private async Task<int> GetResult1Async()
+{
+    int result1 = await GetSomethingAsync();
+    ComputeSomething(result1);
+    return result1;
+}
+```
+
+Auf englisch beschreibt Microsoft das ganze unter https://docs.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/async/ mit einem sehr schönen vergleich.
